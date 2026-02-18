@@ -1,8 +1,7 @@
-# Data Ingestion
-gitpython             # To clone repos
-langchain-text-splitters # To chunk code intelligently
-langchain-openai      # To generate Dense Embeddings
-pinecone-client       # The Vector DB client
-pinecone-text         # To generate Sparse Vectors (BM25)
-python-dotenv         # To load API keys
-tqdm                  # Progress bar (makes it look professional)
+gitpython             
+langchain-text-splitters
+langchain-openai      
+pinecone-client       
+pinecone-text         
+python-dotenv         
+tqdm                 
