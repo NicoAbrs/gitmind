@@ -1,0 +1,7 @@
+# virtual environment 
+venv/ 
+env/ 
+.venv/ 
+
+# machine specific config files 
+.env
