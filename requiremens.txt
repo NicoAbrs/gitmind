@@ -1,7 +1,7 @@
 gitpython             
 langchain-text-splitters
 langchain-google-genai      
-pinecone-client       
+pinecone
 pinecone-text         
 python-dotenv         
 tqdm                 

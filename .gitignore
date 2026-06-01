@@ -3,5 +3,9 @@ venv/
 env/ 
 .venv/ 
 
-# machine specific config files 
+# machine specific config files
 .env
+
+# cloned repos and generated files
+cloned_repo/
+bm25.json
