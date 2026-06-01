@@ -1,6 +1,6 @@
 gitpython             
 langchain-text-splitters
-langchain-openai      
+langchain-google-genai      
 pinecone-client       
 pinecone-text         
 python-dotenv         
