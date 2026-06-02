@@ -9,3 +9,7 @@ env/
 # cloned repos and generated files
 cloned_repo/
 bm25.json
+
+# python bytecode
+__pycache__/
+*.pyc

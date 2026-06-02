@@ -3,6 +3,7 @@ import os
 import re
 import stat
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from git import Repo
 from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
@@ -22,6 +23,7 @@ EXTENSION_TO_LANGUAGE = {
 }
 
 def url_to_namespace(url):
+    # Ensuring a correct namespace when given the url, 
     slug = re.sub(r"[^a-z0-9]+", "-", url.lower().removesuffix(".git").strip("/"))
     return slug.strip("-")[:62]
 
@@ -97,6 +99,26 @@ def chunk_files(file_paths):
     print(f"Created {len(chunks)} chunks from {len(file_paths)} files")
     return chunks
 
+# INCREASING THE EFFICIENCY - RATHER ONE API CALL 8 AT ONCE 
+EMBED_BATCH_SIZE = 50   # chunks per Gemini API call
+EMBED_WORKERS = 8       # concurrent embedding requests
+UPSERT_WORKERS = 4      # concurrent Pinecone upsert requests
+
+def _embed_batch(args):
+    embedder, texts, start = args
+    return start, embedder.embed_documents(texts)
+
+def _build_records(chunks, dense_vectors, sparse_vectors):
+    return [
+        {
+            "id": chunk["id"],
+            "values": dense,
+            "sparse_values": sparse,
+            "metadata": {"file": chunk["file"], "content": chunk["content"]},
+        }
+        for chunk, dense, sparse in zip(chunks, dense_vectors, sparse_vectors)
+    ]
+
 def embed_and_upsert(index, chunks, namespace, bm25_path="bm25.json"):
     texts = [c["content"] for c in chunks]
 
@@ -108,25 +130,33 @@ def embed_and_upsert(index, chunks, namespace, bm25_path="bm25.json"):
 
     print("Generating dense embeddings...")
     embedder = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001")
-    dense_vectors = embedder.embed_documents(texts)
+    dense_vectors = [None] * len(texts)
 
-    batch_size = 100
+    batches = [
+        (embedder, texts[i:i + EMBED_BATCH_SIZE], i)
+        for i in range(0, len(texts), EMBED_BATCH_SIZE)
+    ]
+    with ThreadPoolExecutor(max_workers=EMBED_WORKERS) as pool:
+        futures = {pool.submit(_embed_batch, b): b for b in batches}
+        for fut in tqdm(as_completed(futures), total=len(batches), desc="Embedding"):
+            start, vecs = fut.result()
+            dense_vectors[start:start + len(vecs)] = vecs
+
     print("Upserting to Pinecone...")
-    for i in tqdm(range(0, len(chunks), batch_size)):
-        batch_chunks = chunks[i:i + batch_size]
-        batch_dense = dense_vectors[i:i + batch_size]
-        batch_sparse = sparse_vectors[i:i + batch_size]
+    upsert_batch_size = 100
+    upsert_batches = [
+        _build_records(
+            chunks[i:i + upsert_batch_size],
+            dense_vectors[i:i + upsert_batch_size],
+            sparse_vectors[i:i + upsert_batch_size],
+        )
+        for i in range(0, len(chunks), upsert_batch_size)
+    ]
 
-        records = [
-            {
-                "id": chunk["id"],
-                "values": dense,
-                "sparse_values": sparse,
-                "metadata": {"file": chunk["file"], "content": chunk["content"]},
-            }
-            for chunk, dense, sparse in zip(batch_chunks, batch_dense, batch_sparse)
-        ]
-        index.upsert(vectors=records, namespace=namespace)
+    with ThreadPoolExecutor(max_workers=UPSERT_WORKERS) as pool:
+        futures = {pool.submit(index.upsert, vectors=b, namespace=namespace): b for b in upsert_batches}
+        for fut in tqdm(as_completed(futures), total=len(upsert_batches), desc="Upserting"):
+            fut.result()
 
     print(f"Upserted {len(chunks)} vectors into namespace '{namespace}'")
 
