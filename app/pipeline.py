@@ -171,6 +171,7 @@ def query_index(index, query, namespace, top_k=5, bm25_path="bm25.json"):
     query_kwargs = dict(vector=dense, top_k=top_k, include_metadata=True, namespace=namespace)
     if sparse.get("values"):
         query_kwargs["sparse_vector"] = sparse
+        query_kwargs["alpha"] = 0.75
 
     result = index.query(**query_kwargs)
 
