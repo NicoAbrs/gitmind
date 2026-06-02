@@ -168,13 +168,11 @@ def query_index(index, query, namespace, top_k=5, bm25_path="bm25.json"):
     encoder.load(bm25_path)
     sparse = encoder.encode_queries(query)
 
-    result = index.query(
-        vector=dense,
-        sparse_vector=sparse,
-        top_k=top_k,
-        include_metadata=True,
-        namespace=namespace,
-    )
+    query_kwargs = dict(vector=dense, top_k=top_k, include_metadata=True, namespace=namespace)
+    if sparse.get("values"):
+        query_kwargs["sparse_vector"] = sparse
+
+    result = index.query(**query_kwargs)
 
     return [
         {
