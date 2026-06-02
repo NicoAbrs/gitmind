@@ -1,7 +1,0 @@
-gitpython             
-langchain-text-splitters
-langchain-google-genai      
-pinecone
-pinecone-text         
-python-dotenv         
-tqdm                 

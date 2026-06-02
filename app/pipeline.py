@@ -1,17 +1,16 @@
 # Script that clones a repo, understands structure and uploads smart chunks into pinecone
 import os
-import sys
+import re
 import stat
 import shutil
 from git import Repo
 from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from pinecone import Pinecone, ServerlessSpec
 from pinecone_text.sparse import BM25Encoder
 from dotenv import load_dotenv
 from tqdm import tqdm
-import time
 
 load_dotenv()
 
@@ -22,37 +21,38 @@ EXTENSION_TO_LANGUAGE = {
     ".md": Language.MARKDOWN,
 }
 
+def url_to_namespace(url):
+    slug = re.sub(r"[^a-z0-9]+", "-", url.lower().removesuffix(".git").strip("/"))
+    return slug.strip("-")[:62]
+
+def is_indexed(index, namespace):
+    stats = index.describe_index_stats()
+    ns = stats.namespaces.get(namespace)
+    return ns is not None and ns.vector_count > 0
+
 def pinecone_setup():
-    # Sets up the pinecone index
     index_name = os.getenv("PINECONE_INDEX_NAME")
     pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 
-    # Check if there is a pinecone index, create one if there is not
     if not pc.has_index(index_name):
         pc.create_index(
             name=index_name,
             vector_type="dense",
             dimension=3072, # gemini-embedding-001 output dimensions
             metric="dotproduct", # hybrid search (dense + sparse)
-            spec=ServerlessSpec(
-                cloud="aws",
-                region="us-east-1"
-            )
+            spec=ServerlessSpec(cloud="aws", region="us-east-1")
         )
         print("Index Created")
 
     return pc.Index(index_name)
 
 def clone_repo(url, path):
-    # Wipes any existing path then clones the repo
     if os.path.exists(path):
-        # Windows git files are read-only; chmod before delete
         def _remove_readonly(func, path, _):
             os.chmod(path, stat.S_IWRITE)
             func(path)
         shutil.rmtree(path, onexc=_remove_readonly)
 
-    # Error catching as there are some read-only files in the git files.
     try:
         print("Started cloning")
         repo = Repo.clone_from(url, path)
@@ -63,18 +63,12 @@ def clone_repo(url, path):
         raise
 
 def process_files(path):
-    # Function deals with parsing of valid files within the cloned repo
     supported_extensions = tuple(EXTENSION_TO_LANGUAGE.keys())
     file_paths = []
-
-    # Looping through the path, append valid file path with supported extensions
     for root, dirs, files in os.walk(path):
-        # Check if the files are a supported extension
         for filename in files:
             if filename.endswith(supported_extensions):
-                # Appending the files
                 file_paths.append(os.path.join(root, filename))
-
     return file_paths
 
 def chunk_files(file_paths):
@@ -103,7 +97,7 @@ def chunk_files(file_paths):
     print(f"Created {len(chunks)} chunks from {len(file_paths)} files")
     return chunks
 
-def embed_and_upsert(index, chunks, bm25_path="bm25.json"):
+def embed_and_upsert(index, chunks, namespace, bm25_path="bm25.json"):
     texts = [c["content"] for c in chunks]
 
     print("Fitting BM25 encoder...")
@@ -132,11 +126,11 @@ def embed_and_upsert(index, chunks, bm25_path="bm25.json"):
             }
             for chunk, dense, sparse in zip(batch_chunks, batch_dense, batch_sparse)
         ]
-        index.upsert(vectors=records)
+        index.upsert(vectors=records, namespace=namespace)
 
-    print(f"Upserted {len(chunks)} vectors")
+    print(f"Upserted {len(chunks)} vectors into namespace '{namespace}'")
 
-def query_index(index, query, top_k=5, bm25_path="bm25.json"):
+def query_index(index, query, namespace, top_k=5, bm25_path="bm25.json"):
     embedder = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001")
     dense = embedder.embed_query(query)
 
@@ -149,6 +143,7 @@ def query_index(index, query, top_k=5, bm25_path="bm25.json"):
         sparse_vector=sparse,
         top_k=top_k,
         include_metadata=True,
+        namespace=namespace,
     )
 
     return [
@@ -160,31 +155,16 @@ def query_index(index, query, top_k=5, bm25_path="bm25.json"):
         for match in result.matches
     ]
 
-def generate_answer(query, results):
+def generate_answer(query, results, history=None):
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
     context = "\n\n".join(f"File: {r['file']}\n{r['content']}" for r in results)
-    prompt = (
+    messages = []
+    if history:
+        for msg in history[:-1]:  # exclude the current user message
+            cls = HumanMessage if msg["role"] == "user" else AIMessage
+            messages.append(cls(content=msg["content"]))
+    messages.append(HumanMessage(content=(
         f"You are a code assistant. Use the following code snippets to answer the question.\n\n"
-        f"{context}\n\n"
-        f"Question: {query}"
-    )
-    response = llm.invoke([HumanMessage(content=prompt)])
-    return response.content
-
-def main(repo_url, query, clone_path="./cloned_repo"):
-    index = pinecone_setup()
-    clone_repo(repo_url, clone_path)
-    file_paths = process_files(clone_path)
-    chunks = chunk_files(file_paths)
-    embed_and_upsert(index, chunks)
-    results = query_index(index, query)
-    answer = generate_answer(query, results)
-
-    print(f"\n--- Answer for: '{query}' ---\n")
-    print(answer)
-
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python app/pipeline.py <repo_url> \"<query>\"")
-        sys.exit(1)
-    main(sys.argv[1], sys.argv[2])
+        f"{context}\n\nQuestion: {query}"
+    )))
+    return llm.invoke(messages).content

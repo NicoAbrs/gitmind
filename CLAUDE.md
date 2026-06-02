@@ -4,28 +4,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-gitmind indexes Git repositories into a Pinecone vector database for semantic (hybrid dense + sparse) code search. The intended pipeline: clone repo → discover files → chunk with LangChain → embed with OpenAI → upsert into Pinecone.
+gitmind is a RAG-powered chatbot that indexes a Git repository into Pinecone and lets users ask questions about the codebase via a Streamlit web UI. Embeddings use Gemini, generation uses Gemini chat.
 
 ## Setup
 
-Install dependencies (note the typo in the filename):
+Install dependencies:
 ```
-pip install -r requiremens.txt
+pip install -r requirements.txt
 ```
 
 Required environment variables (create a `.env` file — it is gitignored):
+- `GOOGLE_API_KEY` — from aistudio.google.com
 - `PINECONE_API_KEY`
 - `PINECONE_INDEX_NAME`
-- `OPENAI_API_KEY` (needed for `OpenAIEmbeddings`)
+
+## Running locally
+
+```
+streamlit run app/ui.py
+```
 
 ## Architecture
 
-All logic lives in `app/pipeline.py`. The three implemented functions form the first half of the pipeline:
-
-| Function | Role |
+| File | Role |
 |---|---|
-| `pinecone_setup()` | Createss (if absent) and returns a Pinecone serverless index — dense 1536-dim, dotproduct metric for hybrid search |
-| `clone_repo(url, path)` | Wipes `path` and clones the given repo URL via GitPython |
-| `process_files(path)` | Walks the clone, collecting `.py`, `.js`, `.ts`, `.md` files |
+| `app/pipeline.py` | All core logic: Pinecone setup, repo cloning, chunking, BM25 + Gemini embedding, upsert, query, answer generation |
+| `app/ui.py` | Streamlit web UI — sidebar for indexing, chat interface for querying |
 
-The remaining pipeline stages — chunking (`RecursiveCharacterTextSplitter` / `Language`), sparse encoding (`BM25Encoder`), embedding (`OpenAIEmbeddings`), and Pinecone upsert — are imported but not yet implemented. There is no `main()` or CLI entry point yet.
+**Pipeline flow:** `pinecone_setup()` → `clone_repo()` → `process_files()` → `chunk_files()` → `embed_and_upsert()` → `query_index()` → `generate_answer()`
+
+**Embeddings:** `gemini-embedding-001` (3072-dim, dense) + BM25 sparse vectors → hybrid dotproduct search in Pinecone
+
+**Generation:** `gemini-2.5-flash` with full conversation history passed as `HumanMessage`/`AIMessage` list
+
+**UI state:** `st.session_state.indexed` (bool), `st.session_state.index` (Pinecone index object), `st.session_state.messages` (chat history list)
+
+## Deployment (Streamlit Cloud)
+
+1. Push to GitHub
+2. Go to share.streamlit.io → New app → select repo, set main file to `app/ui.py`
+3. Add secrets: `GOOGLE_API_KEY`, `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`
+4. Deploy — share the generated URL

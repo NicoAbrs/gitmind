@@ -1,0 +1,9 @@
+gitpython
+langchain-text-splitters
+langchain-google-genai
+langchain-core
+pinecone
+pinecone-text
+python-dotenv
+tqdm
+streamlit
